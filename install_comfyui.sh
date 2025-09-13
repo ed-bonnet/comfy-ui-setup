@@ -159,7 +159,7 @@ start_comfyui() {
         alias comfy-stop='systemctl --user stop comfyui.service'
         alias comfy-gpu='nvidia-smi'
         alias comfy-env='conda info --envs'
-        alias comfy-test='python -c "import torch; print(f"CUDA: {torch.cuda.is_available()}"); print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"}")'"
+	alias comfy-test='python -c "import torch; print(f\"CUDA: {torch.cuda.is_available()}\"); print(f\"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else '\''None'\''}\")"'
 
         echo "🎯 Available commands:"
         echo "   comfy-start   - Start ComfyUI manually"
