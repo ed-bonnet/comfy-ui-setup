@@ -23,7 +23,7 @@ if ! command -v nvidia-smi &> /dev/null; then
 fi
 
 echo "✅ NVIDIA drivers found:"
-nvidia-smi --query-gpu=name,driver_version,cuda_version --format=csv,noheader,nounits
+nvidia-smi --query-gpu=name,driver_version --format=csv,noheader,nounits
 
 # Install system dependencies
 echo "📦 Installing system dependencies..."
