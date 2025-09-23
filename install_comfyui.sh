@@ -12,30 +12,6 @@ echo "   - Accepts Anaconda Terms of Service automatically"
 echo "   - Installs and configures ComfyUI properly"
 echo ""
 
-# Step 1: Fix conda path and initialization issues
-echo "🔧 Step 1: Fixing conda initialization and path issues..."
-
-# Check if miniconda is installed but conda command not found
-MINICONDA_PATH="$HOME/miniconda3"
-if [ -d "$MINICONDA_PATH" ] && ! command -v conda &> /dev/null; then
-    echo "📁 Miniconda found at $MINICONDA_PATH but conda command not available"
-    echo "🔧 Fixing conda path and initialization..."
-
-    # Add conda to PATH for current session
-    export PATH="$MINICONDA_PATH/bin:$PATH"
-
-    # Initialize conda for bash
-    $MINICONDA_PATH/bin/conda init bash
-
-    # Source the conda setup
-    source "$MINICONDA_PATH/etc/profile.d/conda.sh"
-
-    # Reload bashrc
-    source ~/.bashrc
-
-    echo "✅ Fixed conda path and initialization"
-fi
-
 # Step 2: Check and handle NVIDIA drivers
 if ! command -v nvidia-smi &> /dev/null; then
     echo "❌ NVIDIA drivers not found. Please install NVIDIA drivers first."
@@ -50,24 +26,26 @@ echo "📦 Installing system dependencies..."
 sudo apt update
 sudo apt install -y wget git curl build-essential
 
-# Step 4: Install Miniconda if not present
+# Step 4: Ensure Conda via helper script
+echo "🔎 Ensuring Conda via ./install_conda.sh..."
+bash "$(dirname "$0")/install_conda.sh"
+
+# Try to make conda available in current shell if still missing
 if ! command -v conda &> /dev/null; then
-    echo "📥 Installing Miniconda..."
-    cd /tmp
-    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
-
-    # Initialize conda
-    $HOME/miniconda3/bin/conda init bash
-
-    # Add to PATH for current session
-    export PATH="$HOME/miniconda3/bin:$PATH"
-
-    echo "✅ Miniconda installed"
-else
-    echo "✅ Conda already available"
+    if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+        # shellcheck disable=SC1090
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    else
+        export PATH="$HOME/miniconda3/bin:$PATH"
+    fi
 fi
 
+if command -v conda &> /dev/null; then
+    echo "✅ Conda is ready: $(conda --version)"
+else
+    echo "❌ Conda not available after install_conda.sh. Aborting."
+    exit 1
+fi
 # Step 5: Source conda properly
 source $HOME/miniconda3/etc/profile.d/conda.sh
 
