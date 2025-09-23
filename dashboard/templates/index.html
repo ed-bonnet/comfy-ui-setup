@@ -104,6 +104,7 @@
           <div>
             <button class="btn btn-sm btn-primary" id="refreshEnvBtn">Refresh</button>
             <button class="btn btn-sm btn-outline-secondary" id="toggleMaskBtn">Toggle Mask</button>
+            <button class="btn btn-sm btn-success ms-2" id="saveEnvBtn">Save</button>
           </div>
         </div>
         <div class="card-body">
@@ -121,6 +122,7 @@
             </table>
           </div>
           <div id="envLocation" class="small text-muted"></div>
+          <div id="envSaveMsg" class="small mt-2"></div>
         </div>
       </div>
     </section>
@@ -258,13 +260,52 @@
       envLocation.textContent = `Path: ${data.path || ""}`;
       const values = data.values || {};
       const rows = Object.keys(values).sort().map(k => {
-        let v = values[k];
-        if (!maskEnabled && v === "••••••••") v = "(masked)";
-        return `<tr><td><code>${escapeHtml(k)}</code></td><td><code>${escapeHtml(v)}</code></td></tr>`;
+        let v = values[k] ?? "";
+        // For masked secrets, show placeholder and leave value empty so we don't overwrite unintentionally
+        const isSecret = (k.toUpperCase() === "ACTION_TOKEN" || k.toUpperCase() === "SECRET_KEY");
+        let inputHtml;
+        if (maskEnabled && isSecret && v === "••••••••") {
+          inputHtml = `<input class="form-control form-control-sm env-input" data-key="${escapeAttr(k)}" placeholder="••••••••" value="">`;
+        } else {
+          if (!maskEnabled && v === "••••••••") v = "(masked)";
+          inputHtml = `<input class="form-control form-control-sm env-input" data-key="${escapeAttr(k)}" value="${escapeAttr(v)}">`;
+        }
+        return `<tr><td><code>${escapeHtml(k)}</code></td><td>${inputHtml}</td></tr>`;
       }).join("");
       envfileTableBody.innerHTML = rows || `<tr><td colspan="2">No entries</td></tr>`;
     } catch (e) {
       envfileTableBody.innerHTML = `<tr><td colspan="2" class="text-danger">Failed to load .env</td></tr>`;
+    }
+  }
+
+  async function saveEnv() {
+    const msg = document.getElementById("envSaveMsg");
+    msg.className = "small mt-2 text-muted";
+    msg.textContent = "Saving…";
+    const inputs = Array.from(document.querySelectorAll(".env-input"));
+    const updates = {};
+    for (const inp of inputs) {
+      const key = inp.dataset.key || "";
+      const val = inp.value;
+      // For secrets, if left empty with placeholder bullets, skip update
+      if ((key.toUpperCase() === "ACTION_TOKEN" || key.toUpperCase() === "SECRET_KEY") && (!val || !val.trim())) {
+        continue;
+      }
+      updates[key] = val;
+    }
+    try {
+      const res = await postJSON("/api/envfile", { updates });
+      const updated = (res.updated || []).join(", ");
+      const restart = !!res.restart_required;
+      msg.className = "small mt-2 " + (restart ? "text-warning" : "text-success");
+      msg.textContent = restart
+        ? `Saved keys: ${updated || "(none)"} — Restart service required for changes to PORT/BIND_HOST.`
+        : `Saved keys: ${updated || "(none)"}.`;
+      // Reload to reflect actual persisted values (and masking)
+      loadEnvfile();
+    } catch (e) {
+      msg.className = "small mt-2 text-danger";
+      msg.textContent = "Save failed.";
     }
   }
 
@@ -277,11 +318,20 @@
       .replace(/"/g, "\"")
       .replace(/'/g, "&#039;");
   }
+  function escapeAttr(s) {
+    return (s || "").toString()
+      .replace(/&/g, "&")
+      .replace(/"/g, "\"")
+      .replace(/</g, "<")
+      .replace(/>/g, ">");
+  }
 
   // Refresh buttons
   document.getElementById("refreshCondaBtn").addEventListener("click", loadConda);
   document.getElementById("refreshServicesBtn").addEventListener("click", loadServices);
   document.getElementById("refreshEnvBtn").addEventListener("click", loadEnvfile);
+  const saveBtn = document.getElementById("saveEnvBtn");
+  if (saveBtn) saveBtn.addEventListener("click", saveEnv);
 
   // Initial load
   initToken();

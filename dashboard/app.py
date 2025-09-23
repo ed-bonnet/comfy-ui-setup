@@ -2,6 +2,7 @@ import os
 import json
 import shlex
 import subprocess
+import re
 from typing import Dict, List, Tuple, Optional
 
 from flask import Flask, render_template, jsonify, request, abort
@@ -245,6 +246,137 @@ def api_envfile():
         else:
             masked[k] = v
     return jsonify({"path": ENV_PATH, "values": masked, "masked": MASK_SECRETS})
+
+
+def _parse_env_file() -> Dict[str, str]:
+    kv: Dict[str, str] = {}
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.lstrip().startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                kv[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return kv
+
+
+def _needs_quotes(val: str) -> bool:
+    # Quote if contains spaces or characters outside this safe set
+    # Allowed unquoted: A-Za-z0-9 _ . - / :
+    return not re.fullmatch(r"[A-Za-z0-9_\.\-/:]*", val or "")
+
+
+def _serialize_val(val: str) -> str:
+    if val is None:
+        val = ""
+    if _needs_quotes(val):
+        # Escape backslashes and quotes inside a quoted value
+        esc = val.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{esc}"'
+    return val
+
+
+@app.post("/api/envfile")
+def api_envfile_update():
+    """
+    Update selected keys in the .env file.
+    Request JSON: { "updates": { "KEY": "VALUE", ... } }
+    Security: requires ACTION_TOKEN if configured.
+    """
+    require_token()
+    try:
+        body = request.get_json(force=True)
+    except Exception:
+        body = {}
+    updates: Dict[str, str] = body.get("updates") or {}
+    if not isinstance(updates, dict):
+        return jsonify({"ok": False, "error": "Invalid payload"}), 400
+
+    # Whitelist keys to prevent dangerous edits
+    editable_keys = {
+        "PORT",
+        "BIND_HOST",
+        "SERVICES",
+        "MASK_SECRETS",
+        "ACTION_TOKEN",
+        "SECRET_KEY",
+        "MINICONDA_CONDA",
+        "COMFYUI_DASHBOARD_DIR",
+        "models_location",
+    }
+
+    # Normalize boolean-like values
+    def norm_bool_str(v: str) -> str:
+        return "true" if str(v).strip().lower() in ("1", "true", "yes", "on") else "false"
+
+    # Load current values
+    current = _parse_env_file()
+    restart_sensitive = {"PORT", "BIND_HOST"}
+    restart_required = False
+
+    # Prepare new content lines
+    # Read original lines to preserve comments/order where possible
+    lines: List[str] = []
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+
+    # Build index of existing keys
+    key_index: Dict[str, int] = {}
+    for idx, line in enumerate(lines):
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        k, _ = line.split("=", 1)
+        key_index[k.strip()] = idx
+
+    applied: List[str] = []
+    for raw_k, raw_v in updates.items():
+        k = str(raw_k).strip()
+        if k not in editable_keys:
+            continue
+
+        v = "" if raw_v is None else str(raw_v)
+
+        # Special handling for MASK_SECRETS (boolean)
+        if k == "MASK_SECRETS":
+            v = norm_bool_str(v)
+
+        # If client left masked placeholders (e.g., "••••••••") unchanged for secrets,
+        # skip updating to avoid overwriting with literal bullets.
+        if k in {"ACTION_TOKEN", "SECRET_KEY"} and v.strip() in ("", "••••••••"):
+            continue
+
+        # Detect restart requirement only if value changes
+        old_v = current.get(k)
+        if old_v is None:
+            # also consider environment variable loaded via python-dotenv on process start
+            old_v = os.getenv(k)
+        if k in restart_sensitive and (old_v or "") != v:
+            restart_required = True
+
+        new_line = f"{k}={_serialize_val(v)}"
+        if k in key_index:
+            lines[key_index[k]] = new_line
+        else:
+            lines.append(new_line)
+        applied.append(k)
+
+    # If nothing to apply, return ok without changes
+    if not applied:
+        return jsonify({"ok": True, "updated": [], "restart_required": False, "path": ENV_PATH})
+
+    # Write back
+    tmp_path = ENV_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).rstrip() + "\n")
+    os.replace(tmp_path, ENV_PATH)
+
+    return jsonify({"ok": True, "updated": applied, "restart_required": restart_required, "path": ENV_PATH})
 
 
 if __name__ == "__main__":
