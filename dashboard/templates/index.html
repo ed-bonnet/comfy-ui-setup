@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ComfyUI Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap CSS via CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/static/app.css" rel="stylesheet">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container-fluid">
+    <span class="navbar-brand">ComfyUI Dashboard</span>
+    <div class="d-flex">
+      <input id="tokenInput" type="password" class="form-control form-control-sm me-2" placeholder="Action token (optional)">
+      <button id="saveTokenBtn" class="btn btn-sm btn-outline-light">Set Token</button>
+    </div>
+  </div>
+</nav>
+
+<main class="container my-4">
+  <div class="row g-4">
+    <!-- Conda Environments -->
+    <section class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>Conda Environments</span>
+          <div>
+            <button class="btn btn-sm btn-primary" id="refreshCondaBtn">Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Prefix</th>
+                  <th>Healthy</th>
+                </tr>
+              </thead>
+              <tbody id="condaTableBody">
+                <tr><td colspan="3">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <hr>
+          <h6>Create New Environment</h6>
+          <form id="createEnvForm" class="row gy-2 gx-2 align-items-center">
+            <div class="col-12 col-md-3">
+              <input type="text" required class="form-control form-control-sm" id="envName" placeholder="Env name">
+            </div>
+            <div class="col-6 col-md-2">
+              <input type="text" class="form-control form-control-sm" id="envPython" placeholder="Python version" value="3.11">
+            </div>
+            <div class="col-12 col-md-5">
+              <input type="text" class="form-control form-control-sm" id="envPackages" placeholder="Extra packages (space-separated)">
+            </div>
+            <div class="col-6 col-md-2 d-grid">
+              <button type="submit" class="btn btn-sm btn-success">Create</button>
+            </div>
+          </form>
+          <div id="createEnvResult" class="small mt-2 text-muted"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Services -->
+    <section class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>Services</span>
+          <div>
+            <button class="btn btn-sm btn-primary" id="refreshServicesBtn">Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="servicesTableBody">
+                <tr><td colspan="4">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- .env file -->
+    <section class="col-12">
+      <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>.env Contents</span>
+          <div>
+            <button class="btn btn-sm btn-primary" id="refreshEnvBtn">Refresh</button>
+            <button class="btn btn-sm btn-outline-secondary" id="toggleMaskBtn">Toggle Mask</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody id="envfileTableBody">
+                <tr><td colspan="2">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="envLocation" class="small text-muted"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="container my-4 text-center text-muted small">
+  ComfyUI Dashboard — local service. Bind and port configurable via .env.
+</footer>
+
+<script>
+  // Token handling (stored in sessionStorage)
+  const tokenKey = "comfyui-dashboard-token";
+  const tokenInput = document.getElementById("tokenInput");
+  const saveTokenBtn = document.getElementById("saveTokenBtn");
+
+  function getAuthHeaders() {
+    const t = sessionStorage.getItem(tokenKey);
+    return t ? { "X-Action-Token": t } : {};
+  }
+  function initToken() {
+    const t = sessionStorage.getItem(tokenKey) || "";
+    tokenInput.value = t;
+  }
+  saveTokenBtn.addEventListener("click", () => {
+    sessionStorage.setItem(tokenKey, tokenInput.value || "");
+    saveTokenBtn.classList.add("btn-success");
+    setTimeout(() => saveTokenBtn.classList.remove("btn-success"), 500);
+  });
+
+  // Fetch helpers
+  async function getJSON(url) {
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error("Request failed");
+    return await res.json();
+  }
+
+  async function postJSON(url, body) {
+    const headers = Object.assign({
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    }, getAuthHeaders());
+    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body || {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw (data || new Error("Request failed"));
+    return data;
+  }
+
+  // Conda envs
+  const condaTableBody = document.getElementById("condaTableBody");
+  async function loadConda() {
+    condaTableBody.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
+    try {
+      const data = await getJSON("/api/conda/envs");
+      const rows = (data.envs || []).map(e => `
+        <tr>
+          <td><code>${escapeHtml(e.name)}</code></td>
+          <td class="text-truncate"><small>${escapeHtml(e.prefix)}</small></td>
+          <td>${e.healthy ? "✅" : "❌"}</td>
+        </tr>
+      `).join("");
+      condaTableBody.innerHTML = rows || `<tr><td colspan="3">No environments found.</td></tr>`;
+    } catch (e) {
+      condaTableBody.innerHTML = `<tr><td colspan="3" class="text-danger">Failed to load envs</td></tr>`;
+    }
+  }
+
+  // Create env
+  const createEnvForm = document.getElementById("createEnvForm");
+  const createEnvResult = document.getElementById("createEnvResult");
+  createEnvForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = document.getElementById("envName").value.trim();
+    const python = document.getElementById("envPython").value.trim() || "3.11";
+    const pkgs = (document.getElementById("envPackages").value || "").trim();
+    const packages = pkgs ? pkgs.split(/\s+/) : [];
+    createEnvResult.textContent = "Submitting…";
+    try {
+      const out = await postJSON("/api/conda/envs", { name, python, packages });
+      createEnvResult.textContent = out.ok ? "Environment creation started/completed." : "Creation failed.";
+      loadConda();
+    } catch (e) {
+      createEnvResult.textContent = "Creation failed.";
+    }
+  });
+
+  // Services
+  const servicesTableBody = document.getElementById("servicesTableBody");
+  async function loadServices() {
+    servicesTableBody.innerHTML = `<tr><td colspan="4">Loading…</td></tr>`;
+    try {
+      const data = await getJSON("/api/services");
+      const rows = (data.services || []).map(s => `
+        <tr>
+          <td>${escapeHtml(s.scope)}</td>
+          <td><code>${escapeHtml(s.name)}</code></td>
+          <td>${escapeHtml(s.status || "unknown")}</td>
+          <td>
+            <div class="btn-group btn-group-sm" role="group">
+              ${["start", "stop", "restart"].map(a => `
+                <button class="btn btn-outline-secondary" onclick="serviceAction('${s.scope}','${s.name}','${a}')">${a}</button>
+              `).join("")}
+            </div>
+          </td>
+        </tr>
+      `).join("");
+      servicesTableBody.innerHTML = rows || `<tr><td colspan="4">No services configured. Set SERVICES in .env.</td></tr>`;
+    } catch (e) {
+      servicesTableBody.innerHTML = `<tr><td colspan="4" class="text-danger">Failed to load services</td></tr>`;
+    }
+  }
+  async function serviceAction(scope, name, action) {
+    try {
+      const url = `/api/services/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/${encodeURIComponent(action)}`;
+      await postJSON(url, {});
+      loadServices();
+    } catch (e) {
+      alert("Action failed");
+    }
+  }
+
+  // .env file
+  const envfileTableBody = document.getElementById("envfileTableBody");
+  const envLocation = document.getElementById("envLocation");
+  let maskEnabled = true;
+  document.getElementById("toggleMaskBtn").addEventListener("click", () => {
+    maskEnabled = !maskEnabled;
+    loadEnvfile();
+  });
+
+  async function loadEnvfile() {
+    envfileTableBody.innerHTML = `<tr><td colspan="2">Loading…</td></tr>`;
+    try {
+      const data = await getJSON("/api/envfile");
+      envLocation.textContent = `Path: ${data.path || ""}`;
+      const values = data.values || {};
+      const rows = Object.keys(values).sort().map(k => {
+        let v = values[k];
+        if (!maskEnabled && v === "••••••••") v = "(masked)";
+        return `<tr><td><code>${escapeHtml(k)}</code></td><td><code>${escapeHtml(v)}</code></td></tr>`;
+      }).join("");
+      envfileTableBody.innerHTML = rows || `<tr><td colspan="2">No entries</td></tr>`;
+    } catch (e) {
+      envfileTableBody.innerHTML = `<tr><td colspan="2" class="text-danger">Failed to load .env</td></tr>`;
+    }
+  }
+
+  // Helpers
+  function escapeHtml(s) {
+    return (s || "").toString()
+      .replace(/&/g, "&")
+      .replace(/</g, "<")
+      .replace(/>/g, ">")
+      .replace(/"/g, "\"")
+      .replace(/'/g, "&#039;");
+  }
+
+  // Refresh buttons
+  document.getElementById("refreshCondaBtn").addEventListener("click", loadConda);
+  document.getElementById("refreshServicesBtn").addEventListener("click", loadServices);
+  document.getElementById("refreshEnvBtn").addEventListener("click", loadEnvfile);
+
+  // Initial load
+  initToken();
+  loadConda();
+  loadServices();
+  loadEnvfile();
+</script>
+</body>
+</html>

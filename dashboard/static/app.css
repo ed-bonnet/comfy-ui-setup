@@ -1,0 +1,68 @@
+/* ComfyUI Dashboard minimal styles */
+:root {
+  --bg: #0b0f14;
+  --card-bg: #11161c;
+  --text: #e6edf3;
+  --muted: #9aa4af;
+  --accent: #5aa9ff;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.navbar {
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text);
+}
+
+.card-header {
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  font-weight: 600;
+}
+
+.table {
+  color: var(--text);
+}
+
+.table thead th {
+  color: var(--muted);
+  font-weight: 600;
+  border-color: rgba(255,255,255,0.08);
+}
+
+.table td, .table th {
+  border-color: rgba(255,255,255,0.08);
+}
+
+.btn-outline-secondary, .btn-outline-secondary:hover {
+  color: var(--text);
+  border-color: rgba(255,255,255,0.2);
+}
+
+small, .text-muted, .small {
+  color: var(--muted) !important;
+}
+
+code {
+  color: var(--accent);
+  background: rgba(90, 169, 255, 0.08);
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+
+footer {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 1rem;
+}

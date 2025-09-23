@@ -27,8 +27,8 @@ sudo apt update
 sudo apt install -y wget git curl build-essential
 
 # Step 4: Ensure Conda via helper script
-echo "🔎 Ensuring Conda via ./install_conda.sh..."
-bash "$(dirname "$0")/install_conda.sh"
+echo "🔎 Ensuring Conda via ./scripts/install_conda.sh..."
+bash "$(dirname "$0")/scripts/install_conda.sh"
 
 # Try to make conda available in current shell if still missing
 if ! command -v conda &> /dev/null; then
