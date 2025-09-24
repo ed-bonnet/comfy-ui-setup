@@ -24,7 +24,7 @@ if load_dotenv:
 
 # Basic config
 MASK_SECRETS = os.getenv("MASK_SECRETS", "true").lower() in ("1", "true", "yes", "on")
-ACTION_TOKEN = os.getenv("ACTION_TOKEN")  # If unset, actions won't require a token
+ACTION_TOKEN = None  # Disabled
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-.env")
 
 # Services to monitor/control: "user:comfyui.service,user:comfyui-dashboard.service"
@@ -144,18 +144,9 @@ def service_status(scope: str, name: str) -> Dict[str, str]:
     return {"scope": scope, "name": name, "status": status}
 
 
+# Token protection removed for simplicity
 def require_token():
-    if not ACTION_TOKEN:
-        # No token configured → allow (local default)
-        return
-    # Header X-Action-Token or Authorization: Bearer ...
-    token = request.headers.get("X-Action-Token") or ""
-    if not token:
-        auth = request.headers.get("Authorization") or ""
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-    if token != ACTION_TOKEN:
-        abort(401, description="Invalid or missing action token")
+    pass  # No check; allow all
 
 
 @app.get("/")
@@ -171,7 +162,7 @@ def api_conda_envs():
 
 @app.post("/api/conda/envs")
 def api_create_conda_env():
-    require_token()
+    # require_token()  # Removed
     try:
         body = request.get_json(force=True)
     except Exception:
@@ -201,7 +192,7 @@ def api_services():
 
 @app.post("/api/services/<scope>/<name>/<action>")
 def api_service_action(scope: str, name: str, action: str):
-    require_token()
+    # require_token()  # Removed
     scope = scope.lower()
     if scope not in ("user", "system"):
         return jsonify({"ok": False, "error": "Invalid scope"}), 400
@@ -216,25 +207,19 @@ def api_service_action(scope: str, name: str, action: str):
 
 @app.get("/api/envfile")
 def api_envfile():
-    # Best-effort parse .env
-    kv = {}
-    if dotenv_values:
+    # Best-effort parse .env, fall back to .env.example if missing
+    kv = _parse_env_file(ENV_PATH)
+    example_path = ENV_PATH.replace(".env", ".env.example")
+    if not kv and os.path.exists(example_path):
+        kv = _parse_env_file(example_path)
+
+    if dotenv_values and kv:
         try:
-            kv = dict(dotenv_values(ENV_PATH) or {})
+            # Override with dotenv if available
+            env_kv = dict(dotenv_values(ENV_PATH) or {})
+            kv.update(env_kv)
         except Exception:
-            kv = {}
-    else:
-        # Minimal parser: KEY=VALUE per line
-        try:
-            with open(ENV_PATH, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    kv[k.strip()] = v.strip()
-        except FileNotFoundError:
-            kv = {}
+            pass
 
     masked = {}
     for k, v in kv.items():
@@ -248,10 +233,10 @@ def api_envfile():
     return jsonify({"path": ENV_PATH, "values": masked, "masked": MASK_SECRETS})
 
 
-def _parse_env_file() -> Dict[str, str]:
+def _parse_env_file(env_path: str = ENV_PATH) -> Dict[str, str]:
     kv: Dict[str, str] = {}
     try:
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
+        with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.rstrip("\n")
                 if not line or line.lstrip().startswith("#") or "=" not in line:
@@ -284,9 +269,8 @@ def api_envfile_update():
     """
     Update selected keys in the .env file.
     Request JSON: { "updates": { "KEY": "VALUE", ... } }
-    Security: requires ACTION_TOKEN if configured.
     """
-    require_token()
+    # require_token()  # Removed
     try:
         body = request.get_json(force=True)
     except Exception:
@@ -320,10 +304,21 @@ def api_envfile_update():
     # Prepare new content lines
     # Read original lines to preserve comments/order where possible
     lines: List[str] = []
-    try:
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except FileNotFoundError:
+    example_path = ENV_PATH.replace(".env", ".env.example")
+    if os.path.exists(ENV_PATH):
+        try:
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except Exception:
+            lines = []
+    elif os.path.exists(example_path):
+        try:
+            with open(example_path, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            # Ensure file will be created on write
+        except Exception:
+            lines = []
+    else:
         lines = []
 
     # Build index of existing keys
@@ -366,9 +361,19 @@ def api_envfile_update():
             lines.append(new_line)
         applied.append(k)
 
-    # If nothing to apply, return ok without changes
+    # If nothing to apply but file didn't exist, create minimal from example or empty
     if not applied:
-        return jsonify({"ok": True, "updated": [], "restart_required": False, "path": ENV_PATH})
+        if not os.path.exists(ENV_PATH) and os.path.exists(example_path):
+            try:
+                with open(example_path, "r", encoding="utf-8") as f:
+                    content = f.read().rstrip() + "\n"
+                with open(ENV_PATH, "w", encoding="utf-8") as f:
+                    f.write(content)
+                applied = list(_parse_env_file(ENV_PATH).keys())
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"Failed to init from example: {e}"}), 500
+        if not applied:
+            return jsonify({"ok": True, "updated": [], "restart_required": False, "path": ENV_PATH})
 
     # Write back
     tmp_path = ENV_PATH + ".tmp"

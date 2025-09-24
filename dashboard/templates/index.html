@@ -12,10 +12,6 @@
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
   <div class="container-fluid">
     <span class="navbar-brand">ComfyUI Dashboard</span>
-    <div class="d-flex">
-      <input id="tokenInput" type="password" class="form-control form-control-sm me-2" placeholder="Action token (optional)">
-      <button id="saveTokenBtn" class="btn btn-sm btn-outline-light">Set Token</button>
-    </div>
   </div>
 </nav>
 
@@ -134,37 +130,22 @@
 </footer>
 
 <script>
-  // Token handling (stored in sessionStorage)
-  const tokenKey = "comfyui-dashboard-token";
-  const tokenInput = document.getElementById("tokenInput");
-  const saveTokenBtn = document.getElementById("saveTokenBtn");
-
   function getAuthHeaders() {
-    const t = sessionStorage.getItem(tokenKey);
-    return t ? { "X-Action-Token": t } : {};
+    return {};
   }
-  function initToken() {
-    const t = sessionStorage.getItem(tokenKey) || "";
-    tokenInput.value = t;
-  }
-  saveTokenBtn.addEventListener("click", () => {
-    sessionStorage.setItem(tokenKey, tokenInput.value || "");
-    saveTokenBtn.classList.add("btn-success");
-    setTimeout(() => saveTokenBtn.classList.remove("btn-success"), 500);
-  });
 
   // Fetch helpers
-  async function getJSON(url) {
+	async function getJSON(url) {
     const res = await fetch(url, { headers: { "Accept": "application/json" } });
     if (!res.ok) throw new Error("Request failed");
     return await res.json();
   }
 
   async function postJSON(url, body) {
-    const headers = Object.assign({
+    const headers = {
       "Content-Type": "application/json",
       "Accept": "application/json"
-    }, getAuthHeaders());
+    };
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body || {}) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw (data || new Error("Request failed"));
@@ -287,10 +268,6 @@
     for (const inp of inputs) {
       const key = inp.dataset.key || "";
       const val = inp.value;
-      // For secrets, if left empty with placeholder bullets, skip update
-      if ((key.toUpperCase() === "ACTION_TOKEN" || key.toUpperCase() === "SECRET_KEY") && (!val || !val.trim())) {
-        continue;
-      }
       updates[key] = val;
     }
     try {
@@ -334,7 +311,6 @@
   if (saveBtn) saveBtn.addEventListener("click", saveEnv);
 
   // Initial load
-  initToken();
   loadConda();
   loadServices();
   loadEnvfile();
