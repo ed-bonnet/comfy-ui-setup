@@ -2,13 +2,12 @@
 # Installer for comfyui-dashboard
 # - Default: Reinstall (uninstall existing then install fresh)
 # - Creates conda env, installs Flask/Gunicorn/python-dotenv
-# - Deploys app from repo's dashboard/ to ~/comfyui-dashboard
+# - Configures app to run from repo's dashboard/ directory instead of deploying elsewhere
 # - Writes/updates user systemd unit and starts/enables it (unless --no-start)
 # - Uses scripts/install_conda.sh to ensure Conda is present
 set -euo pipefail
 
 APP_NAME="comfyui-dashboard"
-APP_DIR="$HOME/$APP_NAME"
 ENV_NAME="$APP_NAME"
 SERVICE_NAME="$APP_NAME.service"
 
@@ -22,6 +21,7 @@ UNINSTALL_ONLY="false"
 # Resolve repo root (this script lives in repo/scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_NAME="$(basename "$REPO_ROOT")"
 SRC_DIR="$REPO_ROOT/dashboard"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_PATH="$UNIT_DIR/$SERVICE_NAME"
@@ -71,13 +71,6 @@ remove_unit() {
   systemctl --user daemon-reload || true
 }
 
-remove_app_dir() {
-  if [[ -d "$APP_DIR" ]]; then
-    info "Removing app directory: $APP_DIR"
-    rm -rf "$APP_DIR"
-  fi
-}
-
 remove_conda_env() {
   if conda env list | grep -qE "^\s*$ENV_NAME\s"; then
     info "Removing conda env: $ENV_NAME"
@@ -89,64 +82,28 @@ uninstall_all() {
   info "Uninstalling $APP_NAME (safe defaults)..."
   stop_disable_unit
   remove_unit
-  remove_app_dir
   remove_conda_env
   info "Uninstall completed."
 }
 
-# TODO TO KEEP ???
-set_env_kv() {
-  local key="$1"; local val="$2"; local file="$APP_DIR/.env"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "$file" || true
-  else
-    echo "${key}=${val}" >> "$file"
-  fi
-}
-
 copy_app_sources() {
   [[ -d "$SRC_DIR" ]] || die "Missing source directory: $SRC_DIR (expected dashboard/ in repo)"
-  info "Deploying app to $APP_DIR"
-  mkdir -p "$APP_DIR"
-  # Copy files
-  cp -f "$SRC_DIR/app.py" "$APP_DIR/"
-  mkdir -p "$APP_DIR/templates" "$APP_DIR/static"
-  if [[ -f "$SRC_DIR/templates/index.html" ]]; then
-    cp -f "$SRC_DIR/templates/index.html" "$APP_DIR/templates/"
-  fi
-  if [[ -f "$SRC_DIR/static/app.css" ]]; then
-    cp -f "$SRC_DIR/static/app.css" "$APP_DIR/static/"
-  fi
+  info "Configuring app in $SRC_DIR"
+  # Ensure directory exists (though it should already be in repo)
+  # Handle .env configuration
   if [[ -f "$SRC_DIR/.env.example" ]]; then
-    cp -f "$SRC_DIR/.env.example" "$APP_DIR/.env.example"
-  fi
-  # If repo provides a ready .env, copy it; else generate from example
-  if [[ -f "$SRC_DIR/.env" ]]; then
-    cp -f "$SRC_DIR/.env" "$APP_DIR/.env"
-  elif [[ -f "$APP_DIR/.env.example" ]]; then
-    cp -n "$APP_DIR/.env.example" "$APP_DIR/.env"
-  else
-    # Create minimal .env if no example provided
-    cat > "$APP_DIR/.env" <<EOF
-PORT=$PORT
-BIND_HOST=$BIND_HOST
-SERVICES=$SERVICES
-MASK_SECRETS=true
-# These will be updated below if we can generate tokens
-ACTION_TOKEN=
-SECRET_KEY=
-EOF
+    cp -n "$SRC_DIR/.env.example" "$SRC_DIR/.env"
   fi
 
   # Apply defaults to .env
-  sed -i "s/^PORT=.*/PORT=$PORT/" "$APP_DIR/.env" || true
-  sed -i "s/^BIND_HOST=.*/BIND_HOST=$BIND_HOST/" "$APP_DIR/.env" || true
-  if ! grep -q "^BIND_HOST=" "$APP_DIR/.env"; then
-    echo "BIND_HOST=$BIND_HOST" >> "$APP_DIR/.env"
+  sed -i "s/^PORT=.*/PORT=$PORT/" "$SRC_DIR/.env" || true
+  sed -i "s/^BIND_HOST=.*/BIND_HOST=$BIND_HOST/" "$SRC_DIR/.env" || true
+  if ! grep -q "^BIND_HOST=" "$SRC_DIR/.env"; then
+    echo "BIND_HOST=$BIND_HOST" >> "$SRC_DIR/.env"
   fi
-  sed -i "s|^SERVICES=.*|SERVICES=$SERVICES|" "$APP_DIR/.env" || true
-  if ! grep -q "^SERVICES=" "$APP_DIR/.env"; then
-    echo "SERVICES=$SERVICES" >> "$APP_DIR/.env"
+  sed -i "s|^SERVICES=.*|SERVICES=$SERVICES|" "$SRC_DIR/.env" || true
+  if ! grep -q "^SERVICES=" "$SRC_DIR/.env"; then
+    echo "SERVICES=$SERVICES" >> "$SRC_DIR/.env"
   fi
 
   # Generate SECRET_KEY if empty
@@ -158,11 +115,11 @@ EOF
       (head -c 16 /dev/urandom 2>/dev/null | xxd -p) || date +%s%N
     fi
   }
-  if ! grep -q "^SECRET_KEY=" "$APP_DIR/.env"; then
-    echo "SECRET_KEY=$(gen_hex)" >> "$APP_DIR/.env"
+  if ! grep -q "^SECRET_KEY=" "$SRC_DIR/.env"; then
+    echo "SECRET_KEY=$(gen_hex)" >> "$SRC_DIR/.env"
   else
-    if [[ -z "$(grep '^SECRET_KEY=' "$APP_DIR/.env" | cut -d= -f2-)" ]]; then
-      sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(gen_hex)/" "$APP_DIR/.env"
+    if [[ -z "$(grep '^SECRET_KEY=' "$SRC_DIR/.env" | cut -d= -f2-)" ]]; then
+      sed -i "s/^SECRET_KEY=.*/SECRET_KEY=$(gen_hex)/" "$SRC_DIR/.env"
     fi
   fi
 }
@@ -177,7 +134,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/$APP_NAME
+WorkingDirectory=%h/$REPO_NAME/dashboard
 # Environment provided here for gunicorn bind and app config
 Environment=PORT=$PORT
 Environment=BIND_HOST=$BIND_HOST
@@ -244,7 +201,7 @@ post_install_notes() {
   echo ""
   info "Install complete."
   echo "Service:     $SERVICE_NAME (user scope)"
-  echo "App Dir:     $APP_DIR"
+  echo "App Dir:     $SRC_DIR (local repo)"
   echo "Conda Env:   $ENV_NAME"
   echo "Bind:        $BIND_HOST"
   echo "Port:        $PORT"

@@ -44,20 +44,21 @@
 
           <hr>
           <h6>Create New Environment</h6>
-          <form id="createEnvForm" class="row gy-2 gx-2 align-items-center">
+          <form id="createEnvForm" class="row gy-2 gx-2">
             <div class="col-12 col-md-3">
               <input type="text" required class="form-control form-control-sm" id="envName" placeholder="Env name">
             </div>
             <div class="col-6 col-md-2">
-              <input type="text" class="form-control form-control-sm" id="envPython" placeholder="Python version" value="3.11">
-            </div>
-            <div class="col-12 col-md-5">
-              <input type="text" class="form-control form-control-sm" id="envPackages" placeholder="Extra packages (space-separated)">
+              <select class="form-control form-control-sm" id="envPython">
+                <option value="3.10">3.10</option>
+                <option value="3.11" selected>3.11</option>
+              </select>
             </div>
             <div class="col-6 col-md-2 d-grid">
               <button type="submit" class="btn btn-sm btn-success">Create</button>
             </div>
           </form>
+          <small class="text-muted">Python 3.10 or 3.11 only. ComfyUI will be installed in ~/comfyuis/{env-name} with torch CUDA. Set models_location in .env for optional models symlink.</small>
           <div id="createEnvResult" class="small mt-2 text-muted"></div>
         </div>
       </div>

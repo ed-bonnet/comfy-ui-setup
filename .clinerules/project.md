@@ -11,15 +11,15 @@ Automated setup for ComfyUI (AI image gen tool) on Ubuntu with RTX GPU. Includes
 
 ## Key Files & Roles
 - install_comfyui.sh: Installs Miniconda, ComfyUI env (python=3.11, PyTorch CUDA), bashrc aliases, systemd service (~/.config/systemd/user/comfyui.service), ~/comfyui-manager.sh.
-- app.py: Flask APIs for conda envs (list/create), services (control comfyui/comfyui-dashboard), .env editing (load/save with example fallback for missing file).
-- install_comfyui_dashboard.sh: Simplified default installer (no parameters; defaults to BIND_HOST=0.0.0.0 for remote access, reinstall/enable/start).
+- app.py: Flask APIs for conda envs (list/create, with optional models symlink from .env models_location), services (control comfyui/comfyui-dashboard), .env editing (load/save with example fallback for missing file).
+- install_comfyui_dashboard.sh: Creates conda env, installs Flask/Gunicorn/python-dotenv, configures app to run from repo's dashboard/ directory instead of deploying elsewhere, creates .env in dashboard/ for configuration, writes/updates user systemd unit (pointed to repo) and starts/enables it (unless --no-start).
 - README.md: High-level install instructions.
 
 ## Features
 - Automated ComfyUI install with CUDA (RTX 3090), TOS handling, env activation.
 - Systemd services for ComfyUI (port 8188) and dashboard (port 8080).
 - Bash manager: status/start/stop/logs/test/fix.
-- Web dashboard: Monitor envs/services, create envs, edit .env, secret masking. .env save now initializes from .env.example if file missing.
+- Web dashboard: Monitor envs/services, create envs (with optional models symlink using models_location from .env), edit .env, secret masking. .env save now initializes from .env.example if file missing. UI field for models location removed; use .env instead.
 - Installer simplified to default purpose (remote bind by default); test script for regressions and issue detection.
 - Access: ComfyUI http://localhost:8188, Dashboard http://0.0.0.0:8080 (remote accessible; secure with firewall).
 
