@@ -136,12 +136,11 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/$REPO_NAME/dashboard
 # Environment provided here for gunicorn bind and app config
-Environment=PORT=$PORT
-Environment=BIND_HOST=$BIND_HOST
 Environment=SERVICES=$SERVICES
 Environment=CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
 Environment=PATH=%h/miniconda3/envs/$ENV_NAME/bin:%h/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -lc 'source %h/miniconda3/etc/profile.d/conda.sh && %h/miniconda3/bin/conda run -n $ENV_NAME gunicorn -b \${BIND_HOST}:\${PORT} -w 2 app:app'
+ExecStart=%h/miniconda3/envs/$ENV_NAME/bin/gunicorn -c gunicorn.conf.py app:app --log-level debug --access-logfile - --error-logfile -
+# ExecStart=/bin/bash -lc 'source %h/miniconda3/etc/profile.d/conda.sh && %h/miniconda3/bin/conda run -n $ENV_NAME gunicorn -c gunicorn.conf.py app:app'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

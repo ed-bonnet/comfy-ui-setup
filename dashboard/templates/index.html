@@ -48,17 +48,16 @@
             <div class="col-12 col-md-3">
               <input type="text" required class="form-control form-control-sm" id="envName" placeholder="Env name">
             </div>
-            <div class="col-6 col-md-2">
-              <select class="form-control form-control-sm" id="envPython">
-                <option value="3.10">3.10</option>
-                <option value="3.11" selected>3.11</option>
-              </select>
-            </div>
-            <div class="col-6 col-md-2 d-grid">
-              <button type="submit" class="btn btn-sm btn-success">Create</button>
-            </div>
+<div class="col-6 col-md-2">
+  <select class="form-control form-control-sm" id="envPython">
+    <!-- Python versions will be populated by JavaScript -->
+  </select>
+</div>
+<div class="col-6 col-md-2 d-grid">
+  <button type="submit" class="btn btn-sm btn-success">Create</button>
+</div>
           </form>
-          <small class="text-muted">Python 3.10 or 3.11 only. ComfyUI will be installed in ~/comfyuis/{env-name} with torch CUDA. Set models_location in .env for optional models symlink.</small>
+          <small class="text-muted">ComfyUI will be installed in ~/comfyuis/{env-name} with torch CUDA. Set models_location in .env for optional models symlink.</small>
           <div id="createEnvResult" class="small mt-2 text-muted"></div>
         </div>
       </div>
@@ -161,8 +160,7 @@
       const data = await getJSON("/api/conda/envs");
       const rows = (data.envs || []).map(e => `
         <tr>
-          <td><code>${escapeHtml(e.name)}</code></td>
-          <td class="text-truncate"><small>${escapeHtml(e.prefix)}</small></td>
+          <td><code>${escapeHtml(e)}</code></td>
           <td>${e.healthy ? "✅" : "❌"}</td>
         </tr>
       `).join("");
@@ -179,11 +177,9 @@
     ev.preventDefault();
     const name = document.getElementById("envName").value.trim();
     const python = document.getElementById("envPython").value.trim() || "3.11";
-    const pkgs = (document.getElementById("envPackages").value || "").trim();
-    const packages = pkgs ? pkgs.split(/\s+/) : [];
     createEnvResult.textContent = "Submitting…";
     try {
-      const out = await postJSON("/api/conda/envs", { name, python, packages });
+      const out = await postJSON("/api/conda/envs", { name, python });
       createEnvResult.textContent = out.ok ? "Environment creation started/completed." : "Creation failed.";
       loadConda();
     } catch (e) {
@@ -311,10 +307,31 @@
   const saveBtn = document.getElementById("saveEnvBtn");
   if (saveBtn) saveBtn.addEventListener("click", saveEnv);
 
+  // Load Python versions for dropdown
+  async function loadPythonVersions() {
+    try {
+      const versions = await getJSON("/api/conda/python-versions");
+      const select = document.getElementById("envPython");
+      select.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join("");
+      // Set default to highest version
+      if (versions.length > 0) {
+        select.value = versions[0];
+      }
+    } catch (e) {
+      console.error("Failed to load Python versions:", e);
+      // Fallback to default options
+      document.getElementById("envPython").innerHTML = `
+        <option value="3.10">3.10</option>
+        <option value="3.11" selected>3.11</option>
+      `;
+    }
+  }
+
   // Initial load
   loadConda();
   loadServices();
   loadEnvfile();
+  loadPythonVersions();
 </script>
 </body>
 </html>

@@ -1,503 +1,153 @@
+import logging
 import os
-import json
-import shlex
-import subprocess
-import re
-from typing import Dict, List, Tuple, Optional
+import sys
+from flask import Flask, render_template, jsonify, request
 
-from flask import Flask, render_template, jsonify, request, abort
+# Add the current directory to Python path for proper imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-try:
-    from dotenv import load_dotenv, dotenv_values
-except Exception:
-    # The app still runs without python-dotenv, but .env reading will be limited
-    load_dotenv = None
-    dotenv_values = None
+from core.config import BASE_DIR, SECRET_KEY
+from core.conda_manager import get_conda_envs, get_available_python_versions
+from core.service_manager import get_services, control_service
+from core.env_file_handler import get_env_file, update_env_file
+from core.comfyui_setup import setup_comfyui_environment
 
-# Resolve base app directory (expected WorkingDirectory in systemd unit)
-BASE_DIR = os.path.abspath(os.getenv("COMFYUI_DASHBOARD_DIR", os.getcwd()))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
+def setup_logging():
+    """Configure logging to work with Gunicorn"""
+    # Get gunicorn logger
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    
+    # Create or get your app logger
+    logger = logging.getLogger(__name__)
+    
+    if gunicorn_logger.handlers:
+        # Running under Gunicorn - use its handlers
+        logger.handlers = gunicorn_logger.handlers[:]
+        logger.setLevel(gunicorn_logger.level)
+    else:
+        # Running standalone - configure basic logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            stream=sys.stdout
+        )
+    
+    return logger
 
-# Load .env if python-dotenv is available
-if load_dotenv:
-    load_dotenv(dotenv_path=ENV_PATH, override=False)
+logger = setup_logging()
+print("DEBUG: App starting", file=sys.stderr)
+logger.info("TEST - App logger initialized")
 
-# Basic config
-MASK_SECRETS = os.getenv("MASK_SECRETS", "true").lower() in ("1", "true", "yes", "on")
-ACTION_TOKEN = None  # Disabled
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-.env")
-
-# Services to monitor/control: "user:comfyui.service,user:comfyui-dashboard.service"
-SERVICES = os.getenv("SERVICES", "")
-
-# Prefer explicit Miniconda path, fallback to PATH
-MINICONDA_CONDA = os.path.expanduser(os.getenv("MINICONDA_CONDA", "~/miniconda3/bin/conda"))
-if not os.path.isfile(MINICONDA_CONDA):
-    MINICONDA_CONDA = "conda"
 
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"), static_folder=os.path.join(BASE_DIR, "static"))
+
+# Configure Flask app to use the same logger
+if __name__ != '__main__':
+    # Running under Gunicorn
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+
 app.secret_key = SECRET_KEY
-
-
-def run_cmd(args: List[str], timeout: int = 20, extra_env: Optional[Dict[str, str]] = None) -> Tuple[int, str, str]:
-    env = os.environ.copy()
-    if extra_env:
-        env.update(extra_env)
-    try:
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=timeout, text=True)
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-    except subprocess.TimeoutExpired as e:
-        return 124, (e.stdout or "").strip(), (e.stderr or f"Command timed out after {timeout}s").strip()
-    except FileNotFoundError as e:
-        return 127, "", f"{e}"
-
-
-def conda_cmd(args: List[str], timeout: int = 30) -> Tuple[int, str, str]:
-    # Ensure TOS is auto-accepted for non-interactive usage if needed
-    extra_env = {"CONDA_PLUGINS_AUTO_ACCEPT_TOS": "yes"}
-    cmd = [MINICONDA_CONDA] + args
-    return run_cmd(cmd, timeout=timeout, extra_env=extra_env)
-
-
-def name_from_prefix(prefix: str) -> str:
-    # Typical env prefix: ~/miniconda3/envs/<name>
-    # Base env is usually ~/miniconda3 (no /envs/<name>)
-    parts = prefix.rstrip("/").split("/")
-    if "envs" in parts:
-        idx = parts.index("envs")
-        if idx + 1 < len(parts):
-            return parts[idx + 1]
-    # Fallback to last segment or 'base'
-    return "base" if prefix.endswith(("miniconda3", "anaconda3")) else parts[-1]
-
-
-def conda_envs() -> List[Dict[str, str]]:
-    rc, out, err = conda_cmd(["env", "list", "--json"])
-    envs: List[Dict[str, str]] = []
-    if rc == 0:
-        try:
-            data = json.loads(out)
-            for p in data.get("envs", []):
-                envs.append({"name": name_from_prefix(p), "prefix": p})
-        except Exception:
-            # Fallback to text parsing if JSON parsing fails
-            pass
-
-    if not envs:
-        # Fallback: parse plain text `conda env list`
-        rc2, out2, _ = conda_cmd(["env", "list"])
-        if rc2 == 0:
-            for line in out2.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                # Format: <name> *? <prefix>
-                parts = line.split()
-                if len(parts) >= 2:
-                    # If second token is '*', then prefix is last token
-                    if parts[1] == "*":
-                        envs.append({"name": parts[0], "prefix": parts[-1]})
-                    else:
-                        envs.append({"name": parts[0], "prefix": parts[-1]})
-
-    # Attach health probe (python -V)
-    for e in envs:
-        e["healthy"] = env_health(e["name"])
-    return envs
-
-
-def env_health(env_name: str) -> bool:
-    rc, out, err = conda_cmd(["run", "-n", env_name, "python", "-V"], timeout=8)
-    return rc == 0 and out.startswith("Python")
-
-
-def parse_services_config() -> List[Dict[str, str]]:
-    entries = []
-    raw = SERVICES.strip()
-    if not raw:
-        return entries
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        # Allow "user:name" or "system:name". Default to "user" if scope omitted.
-        scope = "user"
-        name = item
-        if ":" in item:
-            scope, name = item.split(":", 1)
-            scope = scope.strip() or "user"
-            name = name.strip()
-        entries.append({"scope": scope, "name": name})
-    return entries
-
-
-def systemctl_cmd(scope: str, args: List[str], timeout: int = 15) -> Tuple[int, str, str]:
-    base = ["systemctl"]
-    if scope == "user":
-        base.append("--user")
-    return run_cmd(base + args, timeout=timeout)
-
-
-def service_status(scope: str, name: str) -> Dict[str, str]:
-    rc, out, err = systemctl_cmd(scope, ["is-active", name])
-    status = out if rc == 0 else (out or err or "unknown")
-    return {"scope": scope, "name": name, "status": status}
-
-
-# Token protection removed for simplicity
-def require_token():
-    pass  # No check; allow all
+logger.info("TEST - App logger initialized")
+logger.error("TEST - App logger initialized")
+print("DEBUG: App starting", file=sys.stderr)
 
 
 @app.get("/")
 def index():
+    logger.debug("Serving index page")
     return render_template("index.html")
 
 
 @app.get("/api/conda/envs")
 def api_conda_envs():
-    envs = conda_envs()
-    return jsonify({"envs": envs})
+    logger.debug("Getting conda environments")
+    result = get_conda_envs()
+    logger.debug(f"Returning {len(result.get('envs', []))} environments")
+    return jsonify(result)
 
+@app.get("/api/conda/python-versions")
+def api_python_versions():
+    logger.debug("Getting available Python versions")
+    versions = get_available_python_versions()
+    logger.debug(f"Returning {len(versions)} Python versions")
+    return jsonify(versions)
 
-def get_free_port(start_port=8188):
-    """Find the first free port starting from start_port"""
-    for port in range(start_port, start_port + 100):
-        rc, out, _ = run_cmd(["ss", "-tuln"], timeout=5)
-        if str(port) not in out:
-            return port
-    return None
-
-def create_comfy_service(name: str, env_name: str, port: int, comfy_dir: str):
-    service_name = f"comfy-{name}.service"
-    unit_path = os.path.expanduser(f"~/.config/systemd/user/{service_name}")
-    unit_dir = os.path.dirname(unit_path)
-    os.makedirs(unit_dir, exist_ok=True)
-    unit_content = f"""[Unit]
-Description=ComfyUI {name}
-After=network.target
-
-[Service]
-Type=simple
-User={os.getenv('USER')}
-WorkingDirectory={comfy_dir}
-Environment=PATH=/home/{os.getenv('USER')}/miniconda3/envs/{env_name}/bin:/home/{os.getenv('USER')}/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -lc 'source /home/{os.getenv('USER')}/miniconda3/etc/profile.d/conda.sh && /home/{os.getenv('USER')}/miniconda3/bin/conda run -n {env_name} python main.py --port {port} --listen 0.0.0.0'
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target"""
-    with open(unit_path, "w") as f:
-        f.write(unit_content)
-    run_cmd(["systemctl", "--user", "daemon-reload"])
-    # Start and enable
-    run_cmd(["systemctl", "--user", "start", service_name])
-    run_cmd(["systemctl", "--user", "enable", service_name])
-    return service_name
 
 @app.post("/api/conda/envs")
 def api_create_conda_env():
+    logger.debug("Creating new conda environment")
     try:
         body = request.get_json(force=True)
     except Exception:
         body = {}
+    
     name = (body.get("name") or "").strip()
     pyver = (body.get("python") or "3.11").strip()
-    extra = body.get("packages", [])
-
-    if not name or any(c in name for c in " /\\:"):
-        return jsonify({"ok": False, "error": "Invalid environment name"}), 400
-
-    if pyver not in ("3.10", "3.11"):
-        return jsonify({"ok": False, "error": "Python version must be 3.10 or 3.11"}), 400
-
-    env_name = f"comfy-{name}"
-    # Check uniqueness
-    current_envs = conda_envs()
-    if any(e["name"] == env_name for e in current_envs):
-        return jsonify({"ok": False, "error": f"Environment {env_name} already exists"}), 400
-
-    # Create base env with torch
-    args = [
-        "create", "-n", env_name, f"python={pyver}", "-y",
-        "-c", "pytorch", "-c", "nvidia",
-        "pytorch", "torchvision", "torchaudio", "cudatoolkit=11.8"
-    ]
-    if isinstance(extra, list) and extra:
-        args.extend(extra)
-
-    rc, out, err = conda_cmd(args, timeout=600)
-    if rc != 0:
-        return jsonify({"ok": False, "error": "Failed to create env", "stderr": err}), 400
-
-    # Create dir and install ComfyUI
-    comfy_dir = os.path.expanduser(f"~/comfyuis/{name}")
-    os.makedirs(comfy_dir, exist_ok=True)
-    os.chdir(comfy_dir)
-    if not os.path.exists("main.py"):
-        # Clone if not exists
-        git_rc, _, git_err = run_cmd(["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", "."], timeout=120)
-        if git_rc != 0:
-            # Clean up
-            subprocess.run(["conda", "remove", "-n", env_name, "--all", "-y"], capture_output=True)
-            return jsonify({"ok": False, "error": "Failed to clone ComfyUI", "stderr": git_err}), 400
-
-    # Install comfy-cli in base env if needed, but for ComfyUI, use pip in the env
-    # Assuming comfy install is not standard; use direct pip for known deps if needed, but ComfyUI uses requirements.txt
-
-
-    # Install requirements in env
-    pip_rc, pip_out, pip_err = run_cmd(["conda", "run", "-n", env_name, "pip", "install", "-r", "requirements.txt"], timeout=300)
-    if pip_rc != 0:
-        # Clean up
-        run_cmd(["conda", "remove", "-n", env_name, "--all", "-y"], timeout=60)
-        return jsonify({"ok": False, "error": "Failed to install ComfyUI requirements", "stderr": pip_err}), 400
-
-    # Handle models symbolic link from .env
-    models_location = _parse_env_file(ENV_PATH).get("models_location", "").strip()
-    if models_location:
-        models_src = os.path.expanduser(models_location)
-        models_target = os.path.join(comfy_dir, "models")
-        # Ensure models dir exists
-        os.makedirs(models_target, exist_ok=True)
-        # Remove existing models dir/link
-        if os.path.exists(models_target):
-            rc_rm, _, _ = run_cmd(["rm", "-rf", models_target])
-            if rc_rm != 0:
-                return jsonify({"ok": False, "error": f"Failed to clear existing models at {models_target}"}), 500
-        # Create symlink
-        rc_ln, out_ln, err_ln = run_cmd(["ln", "-s", models_src, models_target])
-        if rc_ln != 0:
-            return jsonify({"ok": False, "error": f"Failed to create models symlink: {err_ln}"}), 500
-        print(f"✅ Models symlink created: {models_target} -> {models_src}")
-
-    if port is None:
-        return jsonify({"ok": False, "error": "No free port found"}), 400
-
-    service_name = create_comfy_service(name, env_name, port, comfy_dir)
-
-    # Update SERVICES in .env
-    services_line = None
-    lines = []
-    with open(ENV_PATH, "r") as f:
-        lines = f.readlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("SERVICES="):
-            services_line = i
-            current_services = line.strip().split("=", 1)[1].strip('"').strip()
-            new_services = f"{current_services},user:{service_name}" if current_services else f"user:{service_name}"
-            lines[i] = f"SERVICES={new_services}\n"
-            break
-    if services_line is None:
-        lines.append(f"SERVICES=user:{service_name}\n")
-    with open(ENV_PATH, "w") as f:
-        f.writelines(lines)
-
-    return jsonify({"ok": True, "env_name": env_name, "service_name": service_name, "port": port, "comfy_dir": comfy_dir}), 200
+    
+    logger.debug(f"Creating environment: {name}, Python version: {pyver}")
+    result = setup_comfyui_environment(name, pyver)
+    
+    if result.get("ok"):
+        logger.debug(f"Environment {name} created successfully")
+        return jsonify(result), 200
+    else:
+        logger.error(f"Failed to create environment {name}: {result.get('error')}")
+        return jsonify(result), 400
 
 
 @app.get("/api/services")
 def api_services():
-    items = parse_services_config()
-    result = [service_status(it["scope"], it["name"]) for it in items]
-    return jsonify({"services": result})
+    logger.debug("Getting services")
+    result = get_services()
+    logger.debug(f"Returning {len(result.get('services', []))} services")
+    return jsonify(result)
 
 
 @app.post("/api/services/<scope>/<name>/<action>")
 def api_service_action(scope: str, name: str, action: str):
-    # require_token()  # Removed
-    scope = scope.lower()
-    if scope not in ("user", "system"):
-        return jsonify({"ok": False, "error": "Invalid scope"}), 400
-    if action not in ("start", "stop", "restart"):
-        return jsonify({"ok": False, "error": "Invalid action"}), 400
-
-    rc, out, err = systemctl_cmd(scope, [action, name], timeout=30)
-    ok = rc == 0
-    status = service_status(scope, name)
-    return jsonify({"ok": ok, "returncode": rc, "stdout": out[-4000:], "stderr": err[-4000:], "status": status}), (200 if ok else 500)
+    logger.debug(f"Controlling service: {scope}/{name} with action: {action}")
+    result = control_service(scope, name, action)
+    
+    if result.get("ok"):
+        logger.debug(f"Service action successful: {scope}/{name}/{action}")
+        return jsonify(result), 200
+    else:
+        logger.error(f"Service action failed: {scope}/{name}/{action} - {result.get('error')}")
+        return jsonify(result), 500
 
 
 @app.get("/api/envfile")
 def api_envfile():
-    # Best-effort parse .env, fall back to .env.example if missing
-    kv = _parse_env_file(ENV_PATH)
-    example_path = ENV_PATH.replace(".env", ".env.example")
-    if not kv and os.path.exists(example_path):
-        kv = _parse_env_file(example_path)
-
-    if dotenv_values and kv:
-        try:
-            # Override with dotenv if available
-            env_kv = dict(dotenv_values(ENV_PATH) or {})
-            kv.update(env_kv)
-        except Exception:
-            pass
-
-    masked = {}
-    for k, v in kv.items():
-        if not MASK_SECRETS:
-            masked[k] = v
-            continue
-        if k.upper() in ("ACTION_TOKEN", "SECRET_KEY", "PASSWORD", "TOKEN", "API_KEY", "AUTH_TOKEN"):
-            masked[k] = "••••••••"
-        else:
-            masked[k] = v
-    return jsonify({"path": ENV_PATH, "values": masked, "masked": MASK_SECRETS})
-
-
-def _parse_env_file(env_path: str = ENV_PATH) -> Dict[str, str]:
-    kv: Dict[str, str] = {}
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line or line.lstrip().startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                kv[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    return kv
-
-
-def _needs_quotes(val: str) -> bool:
-    # Quote if contains spaces or characters outside this safe set
-    # Allowed unquoted: A-Za-z0-9 _ . - / :
-    return not re.fullmatch(r"[A-Za-z0-9_\.\-/:]*", val or "")
-
-
-def _serialize_val(val: str) -> str:
-    if val is None:
-        val = ""
-    if _needs_quotes(val):
-        # Escape backslashes and quotes inside a quoted value
-        esc = val.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{esc}"'
-    return val
+    logger.debug("Getting env file")
+    result = get_env_file()
+    logger.debug(f"Returning env file with {len(result.get('values', {}))} values")
+    return jsonify(result)
 
 
 @app.post("/api/envfile")
 def api_envfile_update():
-    """
-    Update selected keys in the .env file.
-    Request JSON: { "updates": { "KEY": "VALUE", ... } }
-    """
-    # require_token()  # Removed
+    logger.debug("Updating env file")
     try:
         body = request.get_json(force=True)
     except Exception:
         body = {}
-    updates: Dict[str, str] = body.get("updates") or {}
+    
+    updates = body.get("updates") or {}
+    logger.debug(f"Received {len(updates)} updates")
     if not isinstance(updates, dict):
+        logger.error("Invalid payload: updates is not a dict")
         return jsonify({"ok": False, "error": "Invalid payload"}), 400
-
-    # Whitelist keys to prevent dangerous edits
-    editable_keys = {
-        "PORT",
-        "BIND_HOST",
-        "SERVICES",
-        "MASK_SECRETS",
-        "ACTION_TOKEN",
-        "SECRET_KEY",
-        "MINICONDA_CONDA",
-        "COMFYUI_DASHBOARD_DIR",
-        "models_location",
-    }
-
-    # Normalize boolean-like values
-    def norm_bool_str(v: str) -> str:
-        return "true" if str(v).strip().lower() in ("1", "true", "yes", "on") else "false"
-
-    # Load current values
-    current = _parse_env_file()
-    restart_sensitive = {"PORT", "BIND_HOST"}
-    restart_required = False
-
-    # Prepare new content lines
-    # Read original lines to preserve comments/order where possible
-    lines: List[str] = []
-    example_path = ENV_PATH.replace(".env", ".env.example")
-    if os.path.exists(ENV_PATH):
-        try:
-            with open(ENV_PATH, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        except Exception:
-            lines = []
-    elif os.path.exists(example_path):
-        try:
-            with open(example_path, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-            # Ensure file will be created on write
-        except Exception:
-            lines = []
+    
+    result = update_env_file(updates)
+    
+    if result.get("ok"):
+        logger.debug(f"Env file updated successfully, {len(result.get('updated', []))} keys applied")
+        return jsonify(result), 200
     else:
-        lines = []
-
-    # Build index of existing keys
-    key_index: Dict[str, int] = {}
-    for idx, line in enumerate(lines):
-        if not line or line.lstrip().startswith("#") or "=" not in line:
-            continue
-        k, _ = line.split("=", 1)
-        key_index[k.strip()] = idx
-
-    applied: List[str] = []
-    for raw_k, raw_v in updates.items():
-        k = str(raw_k).strip()
-        if k not in editable_keys:
-            continue
-
-        v = "" if raw_v is None else str(raw_v)
-
-        # Special handling for MASK_SECRETS (boolean)
-        if k == "MASK_SECRETS":
-            v = norm_bool_str(v)
-
-        # If client left masked placeholders (e.g., "••••••••") unchanged for secrets,
-        # skip updating to avoid overwriting with literal bullets.
-        if k in {"ACTION_TOKEN", "SECRET_KEY"} and v.strip() in ("", "••••••••"):
-            continue
-
-        # Detect restart requirement only if value changes
-        old_v = current.get(k)
-        if old_v is None:
-            # also consider environment variable loaded via python-dotenv on process start
-            old_v = os.getenv(k)
-        if k in restart_sensitive and (old_v or "") != v:
-            restart_required = True
-
-        new_line = f"{k}={_serialize_val(v)}"
-        if k in key_index:
-            lines[key_index[k]] = new_line
-        else:
-            lines.append(new_line)
-        applied.append(k)
-
-    # If nothing to apply but file didn't exist, create minimal from example or empty
-    if not applied:
-        if not os.path.exists(ENV_PATH) and os.path.exists(example_path):
-            try:
-                with open(example_path, "r", encoding="utf-8") as f:
-                    content = f.read().rstrip() + "\n"
-                with open(ENV_PATH, "w", encoding="utf-8") as f:
-                    f.write(content)
-                applied = list(_parse_env_file(ENV_PATH).keys())
-            except Exception as e:
-                return jsonify({"ok": False, "error": f"Failed to init from example: {e}"}), 500
-        if not applied:
-            return jsonify({"ok": True, "updated": [], "restart_required": False, "path": ENV_PATH})
-
-    # Write back
-    tmp_path = ENV_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines).rstrip() + "\n")
-    os.replace(tmp_path, ENV_PATH)
-
-    return jsonify({"ok": True, "updated": applied, "restart_required": restart_required, "path": ENV_PATH})
+        logger.error(f"Failed to update env file: {result.get('error')}")
+        return jsonify(result), 500
 
 
 if __name__ == "__main__":
