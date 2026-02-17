@@ -17,7 +17,7 @@ PYTORCH_VERSION=2.5.0
 
 # ComfyUI repository
 COMFYUI_REPO=https://github.com/comfyanonymous/ComfyUI.git
-COMFYUI_BRANCH=main
+COMFYUI_BRANCH=master
 
 # Ports
 COMFYUI_PORT=8188

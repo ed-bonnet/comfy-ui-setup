@@ -1,0 +1,11 @@
+ARG CUDA_VERSION
+FROM comfyui-base
+
+COPY install_comfyui.sh /usr/local/bin/install_comfyui.sh
+RUN chmod +x /usr/local/bin/install_comfyui.sh
+
+# Create data directory structure
+RUN mkdir -p /data/models /data/outputs
+
+ENTRYPOINT ["/usr/local/bin/install_comfyui.sh"]
+CMD ["python3", "/data/ComfyUI/main.py", "--listen", "0.0.0.0", "--port", "8188"]

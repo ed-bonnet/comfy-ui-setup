@@ -1,426 +1,57 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ComfyUI Installation Script with Complete Fixes
-# Fixes: 1) Conda path and initialization issues 2) Anaconda Terms of Service acceptance
-# For Ubuntu Server 24.04 with RTX 3090
+# ComfyUI installation script
+# This script runs inside the Docker container to set up ComfyUI
 
-echo "🔧 ComfyUI Installation Script with Complete Fixes"
-echo "📋 This script fixes common conda installation issues:"
-echo "   - Handles conda 'command not found' errors"
-echo "   - Accepts Anaconda Terms of Service automatically"
-echo "   - Installs and configures ComfyUI properly"
-echo ""
+TARGET=/data/ComfyUI
+echo "🔧 Setting up ComfyUI in $TARGET"
 
-# Step 2: Check and handle NVIDIA drivers
-if ! command -v nvidia-smi &> /dev/null; then
-    echo "❌ NVIDIA drivers not found. Please install NVIDIA drivers first."
-    exit 1
+# Clone ComfyUI repository if it doesn't exist
+if [ ! -d "$TARGET" ]; then
+    mkdir -p "$TARGET"
+    # pip install comfy-cli
+    # echo "📥 Installing ComfyUI via comfy-cli..."
+    # echo -e "\n\n\n\n\n" | comfy --workspace="$TARGET" install 
+    # echo "📥 Cloning ComfyUI repository..."
+    git clone --depth=1 --branch master https://github.com/comfyanonymous/ComfyUI.git "$TARGET"
+    # git clone --depth=1 --branch v0.3.59 https://github.com/comfyanonymous/ComfyUI.git "$TARGET"
+
+    # # Install Python dependencies
+    # echo "📦 Installing Python dependencies..."
+    cd "$TARGET"
+    pip3 install --no-cache-dir -r requirements.txt
+    
+    ################# NOT TESTED YET #################
+    # Install additional dependencies for custom nodes
+    echo "📦 Installing additional dependencies (onnxruntime)..."
+    pip3 install --no-cache-dir onnxruntime
+    ##################################################
+    
+    # Create symlink for models and outputs
+    rm -rf models output
+    ln -s /data/models models
+    ln -s /data/outputs output
+
+    # Install comfy-ui manager
+    cd "custom_nodes"
+    git clone --depth=1 https://github.com/ltdrdata/ComfyUI-Manager comfyui-manager
+
+    
+
 fi
-
-echo "✅ NVIDIA drivers found:"
-nvidia-smi --query-gpu=name,driver_version --format=csv,noheader,nounits
-
-# Step 3: Install system dependencies
-echo "📦 Installing system dependencies..."
-sudo apt update
-sudo apt install -y wget git curl build-essential
-
-# Step 4: Ensure Conda via helper script
-echo "🔎 Ensuring Conda via ./scripts/install_conda.sh..."
-bash "$(dirname "$0")/scripts/install_conda.sh"
-
-# Try to make conda available in current shell if still missing
-if ! command -v conda &> /dev/null; then
-    if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-        # shellcheck disable=SC1090
-        source "$HOME/miniconda3/etc/profile.d/conda.sh"
-    else
-        export PATH="$HOME/miniconda3/bin:$PATH"
-    fi
+# Update ComfyUI-Manager user config.ini file, to allow to download with direct github links
+# It needs this file to exist, at the first run it creates it with normal security level
+if [ -f "$TARGET/user/default/ComfyUI-Manager/config.ini" ]; then
+    cd "$TARGET/user/default/ComfyUI-Manager"
+    sed -i 's/normal/weak/g' config.ini
 fi
+cd "$TARGET"
+ls -lha .
+echo "!!!!!"
+echo "!!!!!"
+echo "!!!!!"
+# comfy launch -- --listen 0.0.0.0 --port 8188
+python3 main.py --listen 0.0.0.0 --port 8188
 
-if command -v conda &> /dev/null; then
-    echo "✅ Conda is ready: $(conda --version)"
-else
-    echo "❌ Conda not available after install_conda.sh. Aborting."
-    exit 1
-fi
-# Step 5: Source conda properly
-source $HOME/miniconda3/etc/profile.d/conda.sh
-
-# Step 6: Accept Anaconda Terms of Service BEFORE creating environment
-echo "📝 Accepting Anaconda Terms of Service..."
-
-# Method 1: Set environment variable for automatic acceptance
-export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-
-# Method 2: Manually accept TOS for main channels (if the command is available)
-if command -v conda &> /dev/null; then
-    # Try to accept TOS for main channels
-    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || echo "ℹ️ TOS acceptance via command failed, using auto-accept method"
-    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || echo "ℹ️ TOS acceptance via command failed, using auto-accept method"
-fi
-
-echo "✅ Terms of Service handling configured"
-
-# Step 7: Create ComfyUI environment (with TOS auto-acceptance)
-echo "🐍 Creating ComfyUI conda environment..."
-CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes conda create -n comfyui python=3.11 -y
-
-# Activate environment
-conda activate comfyui
-echo "✅ ComfyUI environment created with Python $(python --version)"
-
-# Step 8: Install comfy-cli and ComfyUI
-echo "📦 Installing comfy-cli and ComfyUI..."
-pip install comfy-cli
-
-echo "⬇️ Installing ComfyUI..."
-comfy install
-
-# Step 9: Install PyTorch with CUDA support
-echo "🔥 Installing PyTorch with CUDA support for RTX 3090..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Step 10: Verify installation
-echo "🧪 Verifying installation..."
-python -c "
-import torch
-print(f'PyTorch version: {torch.__version__}')
-print(f'CUDA available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'CUDA version (PyTorch): {torch.version.cuda}')
-    print(f'GPU count: {torch.cuda.device_count()}')
-    print(f'GPU name: {torch.cuda.get_device_name(0)}')
-else:
-    print('❌ CUDA not available in PyTorch')
-"
-
-# Step 11: Create enhanced bashrc configuration
-echo "⚙️ Configuring enhanced bash environment..."
-cat >> ~/.bashrc << 'EOFBASH'
-
-# ===== ComfyUI Environment Configuration =====
-# Auto-generated by ComfyUI installation script with complete fixes
-# Location: This configuration manages ComfyUI conda environment
-# Environment: ~/miniconda3/envs/comfyui/
-# ComfyUI: ~/comfy/ComfyUI/
-# Purpose: Auto-activate environment and provide management commands
-# TOS: Automatically accepts Anaconda Terms of Service
-
-# Export TOS acceptance for conda
-export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-
-start_comfyui() {
-    echo "🚀 Starting ComfyUI environment..."
-
-    # Ensure conda is available
-    if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-        source "$HOME/miniconda3/etc/profile.d/conda.sh"
-    fi
-
-    if conda activate comfyui 2>/dev/null; then
-        echo "✅ ComfyUI conda environment activated"
-        echo "📍 Environment: $(conda info --envs | grep comfyui | awk '{print $2}')"
-        echo "🐍 Python: $(python --version)"
-
-        # Test CUDA availability
-        CUDA_TEST=$(python -c "import torch; print('✅' if torch.cuda.is_available() else '❌')" 2>/dev/null || echo "❓")
-        echo "🔥 CUDA available: $CUDA_TEST"
-
-        # Enhanced aliases for ComfyUI management
-        alias comfy-start='comfy launch -- --listen 0.0.0.0'
-        alias comfy-status='systemctl --user status comfyui.service'
-        alias comfy-logs='journalctl --user -f -u comfyui.service'
-        alias comfy-restart='systemctl --user restart comfyui.service'
-        alias comfy-stop='systemctl --user stop comfyui.service'
-        alias comfy-gpu='nvidia-smi'
-        alias comfy-env='conda info --envs'
-	alias comfy-test='python -c "import torch; print(f\"CUDA: {torch.cuda.is_available()}\"); print(f\"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else '\''None'\''}\")"'
-
-        echo "🎯 Available commands:"
-        echo "   comfy-start   - Start ComfyUI manually"
-        echo "   comfy-status  - Check service status"
-        echo "   comfy-logs    - View service logs"
-        echo "   comfy-restart - Restart service"
-        echo "   comfy-stop    - Stop service"
-        echo "   comfy-gpu     - Show GPU status"
-        echo "   comfy-env     - Show conda environments"
-        echo "   comfy-test    - Test CUDA/GPU"
-        echo "   comfyui       - Management script"
-    else
-        echo "❌ Failed to activate ComfyUI environment"
-        echo "🔧 Try: source ~/miniconda3/etc/profile.d/conda.sh"
-    fi
-}
-
-# Auto-activate on terminal start (comment out if not desired)
-start_comfyui
-EOFBASH
-
-# Step 12: Create systemd service
-echo "🔧 Creating systemd service..."
-mkdir -p ~/.config/systemd/user
-
-cat > ~/.config/systemd/user/comfyui.service << 'EOFSERVICE'
-[Unit]
-Description=ComfyUI AI Image Generation Service
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=%h/comfy
-Environment=PATH=%h/miniconda3/envs/comfyui/bin:%h/miniconda3/bin:/usr/local/bin:/usr/bin:/bin
-Environment=CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-ExecStartPre=/bin/bash -c 'source %h/miniconda3/etc/profile.d/conda.sh && %h/miniconda3/bin/conda run -n comfyui python -c "import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")"'
-ExecStart=/bin/bash -c 'source %h/miniconda3/etc/profile.d/conda.sh && %h/miniconda3/bin/conda run -n comfyui comfy launch -- --listen 0.0.0.0'
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-EOFSERVICE
-
-# Step 13: Create enhanced management script
-echo "📝 Creating enhanced management script..."
-cat > ~/comfyui-manager.sh << 'EOFMANAGER'
-#!/bin/bash
-
-# ComfyUI Management Script (Enhanced with TOS and Path Fixes)
-# Handles conda path issues and TOS acceptance automatically
-
-# Ensure conda is available
-if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-    export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-elif [ -f "$HOME/miniconda3/bin/conda" ]; then
-    export PATH="$HOME/miniconda3/bin:$PATH"
-    export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-fi
-
-show_status() {
-    echo "=== ComfyUI System Status ==="
-    echo "🔧 Conda Base: $HOME/miniconda3"
-    echo "🐍 Environment: comfyui"
-    echo "📁 ComfyUI Location: $HOME/comfy"
-    echo "🔐 TOS Auto-Accept: ${CONDA_PLUGINS_AUTO_ACCEPT_TOS:-not set}"
-
-    # Check conda availability
-    if command -v conda &> /dev/null; then
-        echo "✅ Conda: Available"
-        # Check if conda environment exists
-        if conda env list | grep -q "comfyui"; then
-            echo "✅ Conda environment: Available"
-        else
-            echo "❌ Conda environment: Missing"
-        fi
-    else
-        echo "❌ Conda: Not available in PATH"
-        echo "🔧 Try: source ~/miniconda3/etc/profile.d/conda.sh"
-    fi
-
-    # Check CUDA
-    if command -v nvidia-smi &> /dev/null; then
-        echo "🔥 GPU Status:"
-        nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits | while read line; do
-            echo "   $line"
-        done
-    fi
-
-    echo "🚀 Service Status:"
-    systemctl --user status comfyui.service --no-pager -l
-    echo ""
-    echo "🌐 Access: http://$(hostname -I | awk '{print $1}'):8188"
-    echo "🌐 Local: http://localhost:8188"
-}
-
-fix_conda_path() {
-    echo "🔧 Attempting to fix conda path issues..."
-
-    if [ -d "$HOME/miniconda3" ]; then
-        echo "📁 Miniconda directory found"
-
-        # Add to current PATH
-        export PATH="$HOME/miniconda3/bin:$PATH"
-
-        # Initialize conda
-        if [ -f "$HOME/miniconda3/bin/conda" ]; then
-            $HOME/miniconda3/bin/conda init bash
-            echo "✅ Conda initialized"
-        fi
-
-        # Source conda setup
-        if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-            source "$HOME/miniconda3/etc/profile.d/conda.sh"
-            echo "✅ Conda sourced"
-        fi
-
-        echo "🔄 Please restart your terminal or run: source ~/.bashrc"
-    else
-        echo "❌ Miniconda directory not found at $HOME/miniconda3"
-    fi
-}
-
-accept_tos() {
-    echo "📝 Accepting Anaconda Terms of Service..."
-
-    # Set auto-accept environment variable
-    export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-
-    # Try manual acceptance if conda is available
-    if command -v conda &> /dev/null; then
-        conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null && echo "✅ Main channel TOS accepted" || echo "ℹ️ Main channel TOS auto-handled"
-        conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null && echo "✅ R channel TOS accepted" || echo "ℹ️ R channel TOS auto-handled"
-    else
-        echo "⚠️ Conda not available, using auto-accept method only"
-    fi
-
-    # Add to bashrc permanently
-    if ! grep -q "CONDA_PLUGINS_AUTO_ACCEPT_TOS" ~/.bashrc; then
-        echo "export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes" >> ~/.bashrc
-        echo "✅ Auto-accept added to ~/.bashrc"
-    fi
-}
-
-test_full_setup() {
-    echo "🧪 Testing complete ComfyUI setup..."
-
-    # Test conda
-    if command -v conda &> /dev/null; then
-        echo "✅ Conda: Available"
-        conda --version
-    else
-        echo "❌ Conda: Not available"
-        return 1
-    fi
-
-    # Test environment
-    if conda env list | grep -q "comfyui"; then
-        echo "✅ ComfyUI environment: Available"
-
-        # Activate and test
-        source "$HOME/miniconda3/etc/profile.d/conda.sh"
-        conda activate comfyui
-
-        # Test Python and PyTorch
-        python -c "
-import sys
-print(f'✅ Python: {sys.version.split()[0]}')
-
-try:
-    import torch
-    print(f'✅ PyTorch: {torch.__version__}')
-    print(f'✅ CUDA available: {torch.cuda.is_available()}')
-    if torch.cuda.is_available():
-        print(f'✅ GPU: {torch.cuda.get_device_name(0)}')
-    else:
-        print('❌ CUDA not available')
-except ImportError as e:
-    print(f'❌ PyTorch import failed: {e}')
-
-try:
-    import comfy
-    print('✅ ComfyUI: Available')
-except ImportError:
-    print('❌ ComfyUI: Not available')
-"
-    else
-        echo "❌ ComfyUI environment: Missing"
-    fi
-}
-
-case $1 in
-    "status"|"") show_status ;;
-    "start") 
-        export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-        systemctl --user start comfyui.service 
-        sleep 3 
-        show_status 
-        ;;
-    "stop") 
-        systemctl --user stop comfyui.service 
-        echo "🛑 ComfyUI service stopped"
-        ;;
-    "restart") 
-        export CONDA_PLUGINS_AUTO_ACCEPT_TOS=yes
-        systemctl --user restart comfyui.service 
-        sleep 3 
-        show_status 
-        ;;
-    "logs") 
-        echo "📋 ComfyUI Service Logs (Press Ctrl+C to exit):"
-        journalctl --user -f -u comfyui.service 
-        ;;
-    "enable") 
-        systemctl --user enable comfyui.service 
-        echo "✅ Service enabled for automatic startup"
-        ;;
-    "disable") 
-        systemctl --user disable comfyui.service 
-        echo "🛑 Service disabled from automatic startup"
-        ;;
-    "fix-conda") fix_conda_path ;;
-    "accept-tos") accept_tos ;;
-    "test") test_full_setup ;;
-    *) 
-        echo "ComfyUI Manager v1.2 (Enhanced)"
-        echo "Usage: $0 [command]"
-        echo ""
-        echo "Commands:"
-        echo "  status      - Show current status (default)"
-        echo "  start       - Start ComfyUI service"
-        echo "  stop        - Stop ComfyUI service"
-        echo "  restart     - Restart ComfyUI service"
-        echo "  logs        - View live logs"
-        echo "  enable      - Enable automatic startup"
-        echo "  disable     - Disable automatic startup"
-        echo "  fix-conda   - Fix conda path issues"
-        echo "  accept-tos  - Accept Anaconda Terms of Service"
-        echo "  test        - Test complete setup"
-        ;;
-esac
-EOFMANAGER
-
-chmod +x ~/comfyui-manager.sh
-
-# Step 14: Setup systemd service
-echo "🚀 Setting up systemd service..."
-systemctl --user daemon-reload
-systemctl --user enable comfyui.service
-
-# Enable user lingering for boot startup
-sudo loginctl enable-linger $USER
-
-# Add alias to bashrc
-echo "alias comfyui='$HOME/comfyui-manager.sh'" >> ~/.bashrc
-
-# Final verification
-echo ""
-echo "🎉 ComfyUI Installation Complete with All Fixes Applied!"
-echo ""
-echo "🔧 What was fixed:"
-echo "   - Conda path and initialization issues"
-echo "   - Anaconda Terms of Service acceptance"
-echo "   - Enhanced error handling and management"
-echo ""
-echo "🏗️ What was installed:"
-echo "   - Miniconda: $HOME/miniconda3"
-echo "   - ComfyUI Environment: ~/miniconda3/envs/comfyui"
-echo "   - ComfyUI: $HOME/comfy/ComfyUI"
-echo "   - Management Script: ~/comfyui-manager.sh"
-echo ""
-echo "📋 Next steps:"
-echo "1. Restart terminal or run: source ~/.bashrc"
-echo "2. Test setup: comfyui test"
-echo "3. Start service: comfyui start"
-echo "4. Access ComfyUI: http://$(hostname -I | awk '{print $1}'):8188"
-echo ""
-echo "💡 Troubleshooting commands:"
-echo "   comfyui fix-conda   - Fix conda path issues"
-echo "   comfyui accept-tos  - Re-accept Terms of Service"
-echo "   comfyui test        - Test complete setup"
-echo ""
-echo "✅ All known issues have been addressed!"
+echo "✅ ComfyUI installation completed"
